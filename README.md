@@ -10,7 +10,7 @@ This repository contains scripts and functions to reproduce the results presente
 
 The [results](results) folder contains the main results of the experiments presented in the paper. Some results were too big to be pre-computed and inclused in this repository (random maps and permutations). However, these results can be easily re-computed using [main_script.py](main_script.py).
 
-### The figures
+## The figures
 
 The [figures](figures) folder contains the main elements of the figures presented in the manuscript. As mentionned above, the code to re-generate each element is stored in [main_script.py](main_script.py).
 
