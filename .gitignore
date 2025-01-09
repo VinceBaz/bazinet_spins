@@ -12,6 +12,7 @@ results/random_maps/pial/length_20/*
 results/random_maps/pial/length_30/*
 results/random_maps/pial/length_40/*
 results/random_maps/pial/length_50/*
+results/original_vs_rotated_r/*
 !results/random_maps/sphere/length_1/.gitkeep
 !results/random_maps/sphere/length_10/.gitkeep
 !results/random_maps/sphere/length_20/.gitkeep
@@ -24,3 +25,4 @@ results/random_maps/pial/length_50/*
 !results/random_maps/pial/length_30/.gitkeep
 !results/random_maps/pial/length_40/.gitkeep
 !results/random_maps/pial/length_50/.gitkeep
+!results/original_vs_rotated_r/.gitkeep

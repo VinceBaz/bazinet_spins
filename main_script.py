@@ -22,6 +22,10 @@ RESULT 5: Compute delta Moran's I for random maps on spherical mesh
 RESULT 6: Compute delta Moran's I for random maps on pial mesh
 RESULT 7: Compute false positive rates for random maps on spherical mesh
 RESULT 8: Compute false positive rates for random maps on pial mesh
+RESULT 9: Original vs. rotated map similarity across levels of removal
+
+FIGURE 2: Spherical projections inflate false positive rates 
+FIGURE 3: Targeted removal of poor nulls improves performance
 
 @author: Vincent Bazinet
 """
@@ -34,6 +38,7 @@ os.chdir((os.path.expanduser("~") + "/OneDrive - McGill University/"
 
 # IMPORT STATEMENTS
 import functions as fn
+import pyvista as pv
 import gstools as gs
 import numpy as np
 import nibabel as nib
@@ -43,7 +48,9 @@ from scipy.stats import zscore
 from scipy.spatial import cKDTree
 from neuromaps.images import construct_shape_gii, load_data
 from neuromaps.nulls.spins import _gen_rotation
-
+from palettable.colorbrewer.diverging import Spectral_11_r
+from palettable.cartocolors.sequential import SunsetDark_7
+    
 # MATPLOTLIB RCPARAMS
 plt.rcParams.update({'font.size': 12})
 plt.rcParams.update({'font.family': 'Calibri'})
@@ -247,8 +254,159 @@ for l in [1, 10, 20, 30, 40, 50]:
             r = (zX * zY).mean()
             r_spun = (zY * zX_perm).mean(axis=0)
             for k, q in enumerate(quantiles_all):
-                p_all[j, k] = fn.get_p_value(r_spun[quantiles_nb >= q][:1000], r)
+                p_all[j, k] = fn.get_p_value(r_spun[quantiles_nb >= q][:1000],
+                                             r)
         FPRs[i,:] = np.count_nonzero(p_all < 0.05, axis=0) / (n_maps-1)
 
     # Save results
     np.save(f"results/FPRs/pial/length_{l}.npy", FPRs)
+
+#%% RESULT 9: Original vs. rotated map similarity across levels of removal
+
+# Setup parameters and load permutations
+n_maps = 1000
+map_path = 'results/random_maps/pial/'
+n_perm = 10000
+perm = np.load("results/permutations.npy")
+perm_quality = np.load("results/spin_qualities.npy")
+
+# Sample subset of permutations (based on the quality of the spins)
+quantiles_all = np.arange(0, 91, 2.5)
+n_q = len(quantiles_all)
+quantiles_spins, quantiles_nb = fn.sample_subset_permutations(
+    quantiles_all, perm_quality, n_perm=1000)
+spin_subsets = perm[quantiles_spins]
+
+for l in [1, 10, 20, 30, 40, 50]:
+
+    # Load random maps
+    random_maps = np.array(
+        [load_data(f"{map_path}/length_{l}/{i}.shape.gii")
+         for i in range(n_maps)])    
+
+    # Load random map + compute correlations for each threshold
+    r_all = np.zeros((n_q, n_maps, 1000))
+    for i in trange(n_maps):
+        zX = zscore(random_maps[i,:])[:, np.newaxis]
+        zX_perm = zscore(random_maps[i,:][spin_subsets].T, axis=0)
+        r_spun = (zX * zX_perm).mean(axis=0)
+        for k, q in enumerate(quantiles_all):
+            r_all[k, i, :] = r_spun[quantiles_nb >= q][:1000]
+    
+    # Save results
+    np.save(f"results/original_vs_rotated_r/length_{l}.npy",
+            r_all)
+
+#%% FIGURE 2: Spherical projections inflate false positive rates 
+
+'''
+Plot maps on surface meshes
+'''
+
+lengths = [1, 10, 20, 30, 40, 50]
+cmap = Spectral_11_r.mpl_colormap
+
+# spherical mesh
+map_path = 'results/random_maps/sphere/'
+sphere_mesh = fn.load_mesh('fsaverage', '10k', 'sphere', 'L', 'polydata')
+for l in lengths:
+    save_path = f'figures/figure_2/random_maps/sphere/length_{l}.png'
+    random_map = load_data(f'{map_path}/length_{l}/0.shape.gii')
+    fn.plot_surface_map(random_map, sphere_mesh, cmap=cmap, save=True,
+                        save_path=save_path)
+
+# pial mesh
+map_path = 'results/random_maps/pial/'
+pial_mesh = fn.load_mesh('fsaverage', '10k', 'pial', 'L', 'polydata')
+for l in lengths:
+    save_path = f'figures/figure_2/random_maps/pial/length_{l}.png'
+    random_map = load_data(f'{map_path}/length_{l}/0.shape.gii')
+    fn.plot_surface_map(random_map, pial_mesh, cmap=cmap, view='yz_negative',
+                        save=True, save_path=save_path)
+
+'''
+Plot FPR across levels of autocorrelation (length)
+'''
+
+lengths = [1, 10, 20, 30, 40, 50]
+
+# spherical mesh
+FPRs = [np.load(f'results/FPRs/sphere/length_{l}.npy') for l in lengths]
+fn.boxplot(FPRs, xticks=lengths, xlabel='length', ylabel='FPR',
+           figsize=(2.5, 3), tight=True)
+plt.savefig("figures/figure_2/FPR_across_lengths_sphere.svg")
+
+# pial mesh
+FPRs = [np.load(f'results/FPRs/pial/length_{l}.npy')[:,0] for l in lengths]
+fn.boxplot(FPRs, xticks=lengths, xlabel='length', ylabel='FPR',
+           figsize=(2.5, 3), tight=True)
+plt.savefig("figures/figure_2/FPR_across_lengths_pial.svg")
+
+'''
+Plot scatterplot of the relationship between delta I and FPR
+'''
+
+# spherical mesh
+FPRs = np.load('results/FPRs/sphere/length_50.npy')
+delta_I = np.load("results/delta_I/sphere.npy")
+fn.scatterplot(delta_I, FPRs, xlabel='$\Delta$I', ylabel='FPR', figsize=(3, 3),
+                 s=2, compute_r=True, rasterized=True, c='black', tight=True)
+plt.savefig("figures/figure_2/scatterplot_deltaI_FPR_sphere.svg", dpi=300)
+
+# pial mesh
+FPRs = np.load('results/FPRs/pial/length_50.npy')[:,0]
+delta_I = np.load("results/delta_I/pial.npy")
+fn.scatterplot(delta_I, FPRs, xlabel='$\Delta$I', ylabel='FPR', figsize=(3, 3),
+                 s=2, compute_r=True, rasterized=True, c='black', tight=True)
+plt.savefig("figures/figure_2/scatterplot_deltaI_FPR_pial.svg", dpi=300)
+
+#%% FIGURE 3: Targeted removal of poor nulls improves performance
+
+'''
+Lineplot of FPR across lengths, for different levels of targeted removal.
+'''
+
+quantiles_all = np.arange(0, 91, 2.5)
+lengths = [1, 10, 20, 30, 40, 50]
+cmap = Spectral_11_r.mpl_colormap
+
+FPR_means = np.array(
+    [np.load(f'results/FPRs/pial/length_{l}.npy').mean(axis=0) 
+     for l in lengths])
+
+colors_all = fn.get_color_distribution(quantiles_all,
+                                       cmap=SunsetDark_7.mpl_colormap)
+fn.lineplot(lengths, FPR_means.T, colors=colors_all, xlabel='lengths',
+            ylabel='FPR', figsize=(4, 3), tight=True)
+plt.savefig("figures/figure_3/lineplots_FPR_across_removal_levels.svg")
+
+'''
+Boxplot of FPR across lengths at a 77.5 removal
+'''
+
+# pial mesh
+FPRs = [np.load(f'results/FPRs/pial/length_{l}.npy')[:,31] for l in lengths]
+fn.boxplot(FPRs, xticks=lengths, xlabel='length', ylabel='FPR',
+           figsize=(2.5, 3), tight=True)
+plt.savefig("figures/figure_3/FPR_across_lengths_77.5_removal.svg")
+
+'''
+Lineplot of average similarity across length for different levels of targeted
+removal
+'''
+
+quantiles_all = np.arange(0, 91, 2.5)
+lengths = [1, 10, 20, 30, 40, 50]
+cmap = Spectral_11_r.mpl_colormap
+
+r_mean = np.array(
+    [np.abs(np.load(f"results/original_vs_rotated_r/length_{l}.npy"
+            )).mean(axis=2).mean(axis=1)
+     for l in lengths]
+    )
+
+colors = fn.get_color_distribution(quantiles_all,
+                                   cmap=SunsetDark_7.mpl_colormap)
+fn.lineplot(lengths, r_mean.T, colors=colors, figsize=(4, 3),
+              xlabel='length', ylabel='average similarity', tight=True)
+plt.savefig("figures/figure_3/lineplots_average_similarity.svg")

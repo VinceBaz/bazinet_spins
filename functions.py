@@ -12,8 +12,13 @@ tests for brain maps'.
 import meshio
 import nibabel as nib
 import numpy as np
-from scipy.stats import zscore
+import pyvista as pv
+import matplotlib.pyplot as plt
+import matplotlib as mpl
+from matplotlib import cm
+from scipy.stats import zscore, pearsonr, rankdata
 from scipy.spatial.distance import cdist
+from matplotlib.colors import is_color_like, rgb2hex
 from neuromaps.datasets import fetch_atlas
 from tqdm import trange
 
@@ -21,6 +26,7 @@ from tqdm import trange
 '''
 RESULTS FUNCTIONS
 '''
+
 
 def evaluate_spin_quality(dist, z_dist_triu, triu_ids, perm):
     '''
@@ -124,17 +130,17 @@ UTILITY FUNCTIONS
 '''
 
 
-def load_mesh(atlas, density, surface, hemi='L'):
+def load_mesh(atlas, density, surface, hemi='L', data_format='meshio'):
     '''
-    Function to load a surface mesh of the brain, in the format defined by
-    `meshio`.
+    Function to load a surface mesh of the brain, either in the format defined
+    by `meshio` or in the format defined by pyvista (`PolyData`).
 
     Parameters
     ----------
 
     Returns
     -------
-    mesh: meshio.Mesh object
+    mesh: meshio.Mesh or pv.PolyData object
         Surface mesh of the brain.
 
     '''
@@ -145,7 +151,14 @@ def load_mesh(atlas, density, surface, hemi='L'):
         hemiid = 1
     gii_mesh = nib.load(fetch_atlas(atlas, density)[surface][hemiid])
     points, triangles = gii_mesh.agg_data()
-    mesh = meshio.Mesh(points, {'triangle': triangles})
+
+    if data_format == 'meshio':
+        mesh = meshio.Mesh(points, {'triangle': triangles})
+    elif data_format == 'polydata':
+        mesh = pv.PolyData(
+            points,
+            np.c_[np.ones((triangles.shape[0],), dtype=int)*3, triangles]
+            )
 
     return mesh
 
@@ -249,3 +262,245 @@ def get_p_value(perm, emp, axis=0):
                             axis=0)/k
 
     return pval
+
+
+'''
+VISUALIZATION FUNCTIONS
+'''
+
+
+def plot_surface_map(map, mesh, cmap='viridis', save=False, save_path=None,
+                     view='default'):
+
+    pl = pv.Plotter(window_size=(1000, 1000), lighting="none", off_screen=True)
+    mesh.point_data['map'] = map
+    pl.add_mesh(mesh, scalars='map', cmap=cmap)
+    pl.remove_scalar_bar()
+    if view == 'yz_negative':
+        pl.view_yz(negative=True)
+    pl.show(auto_close=False)
+
+    if save:
+        plt.ioff()
+        plt.figure()
+        plt.imshow(pl.image)
+        plt.axis('off')
+        plt.savefig(save_path, dpi=600)
+        plt.close('all')
+        plt.ion()
+
+
+def boxplot(results, figsize=(2, 3), widths=0.8, showfliers=True,
+            edge_colors='black', face_colors='lightgray',
+            median_color=None, significants=None, positions=None, vert=True,
+            ax=None, xlabel=None, ylabel=None, xticks=None, yticks=None,
+            tight=False):
+    '''
+    Function to plot results in a boxplot
+
+    Parameters
+    ----------
+    results: (n_boxes, n_observations) ndarray
+        Results to be plotted in the boxplot
+
+    Returns
+    -------
+    fig: matplotlib.figure.Figure
+        The figure associated with the boxplot
+    '''
+
+    # Setup the flierprops dictionary
+    flierprops = dict(marker='+',
+                      markerfacecolor='lightgray',
+                      markeredgecolor='lightgray')
+
+    # Initialize the figure (if no `ax` provided)
+    if ax is None:
+        fig = plt.figure(figsize=figsize, frameon=False)
+        ax = plt.gca()
+    else:
+        fig = plt.gcf()
+
+    n_boxes = len(results)
+
+    # Add axis labels (optional)
+    if xlabel is not None:
+        ax.set_xlabel(xlabel)
+    if ylabel is not None:
+        ax.set_ylabel(ylabel)
+
+    # Setup default positions
+    if positions is None:
+        positions = np.arange(1, n_boxes + 1)
+
+    if is_color_like(edge_colors):
+        edge_colors = [edge_colors] * n_boxes
+    if is_color_like(face_colors):
+        face_colors = [face_colors] * n_boxes
+
+    # Plot each box individually
+    for i in range(n_boxes):
+
+        bplot = ax.boxplot(results[i],
+                           widths=widths,
+                           showfliers=showfliers,
+                           patch_artist=True,
+                           zorder=0,
+                           flierprops=flierprops,
+                           showcaps=False,
+                           vert=vert,
+                           positions=[positions[i]])
+
+        for element in ['boxes', 'whiskers', 'fliers',
+                        'means', 'medians', 'caps']:
+            if element == 'medians' and median_color is not None:
+                plt.setp(bplot[element], color=median_color)
+            else:
+                plt.setp(bplot[element], color=edge_colors[i])
+
+        for patch in bplot['boxes']:
+
+            if significants is not None:
+                if significants[i]:
+                    patch.set(facecolor=face_colors[i])
+                else:
+                    patch.set(facecolor='white')
+            else:
+                patch.set(facecolor=face_colors[i])
+
+    # Add axis ticks (optional)
+    if xticks is not None:
+        plt.xticks(np.arange(1, len(xticks)+1), xticks)
+    if yticks is not None:
+        plt.yticks(np.arange(1, len(yticks)+1), yticks)
+
+    if tight:
+        plt.tight_layout()
+
+    return fig
+
+
+def scatterplot(X, Y, triu=False, tight=False, figsize=None, c='black',
+                xlabel=None, ylabel=None, xscale='linear',
+                plot_y_mean=False, plot_x_mean=False, plot_identity=False,
+                compute_r=False, compute_rho=False, r_round=None,
+                r_title="r: ", rho_title='rho: ', plot_cbar=False,
+                cbar_label='', ma_width=9, **kwargs):
+    ''' Wrapper function to plot a scatterplot (using matplotlib)'''
+
+    # Only look at upper triangular indices
+    if triu:
+        X = X[np.triu_indices(len(X), 1)]
+        Y = Y[np.triu_indices(len(Y), 1)]
+        if isinstance(c, np.ndarray):
+            c = c[np.triu_indices(len(c), 1)]
+
+    plt.figure(figsize=figsize)
+    plt.scatter(X, Y, c=c, **kwargs)
+
+    if compute_r and compute_rho:
+        r, _ = pearsonr(X, Y)
+        rho, _ = pearsonr(rankdata(X), rankdata(Y))
+        if r_round is None:
+            plt.title(f"{r_title}{r} | {rho_title}{rho}")
+        else:
+            plt.title(f"{r_title}{round(r, r_round)} | "
+                      f"{rho_title}{round(rho, r_round)}")
+    elif compute_r:
+        r, _ = pearsonr(X, Y)
+        if r_round is None:
+            plt.title(f"{r_title}{r}")
+        else:
+            plt.title(f"{r_title}{round(r, r_round)}")
+    elif compute_rho:
+        rho, _ = pearsonr(rankdata(X), rankdata(Y))
+        if r_round is None:
+            plt.title(f"{rho_title}{rho}")
+        else:
+            plt.title(f"{rho_title}{round(rho, r_round)}")
+
+    if plot_y_mean:
+        plt.plot([X.min(), X.max()], [Y.mean(), Y.mean()],
+                 color='lightgray',
+                 linestyle='dashed')
+    if plot_x_mean:
+        plt.plot([X.mean(), X.mean()], [Y.min(), Y.max()],
+                 color='lightgray',
+                 linestyle='dashed')
+    if plot_identity:
+        plt.plot([X.min(), X.max()], [X.min(), X.max()],
+                 color='lightgray',
+                 linestyle='dashed')
+
+    # Change x/y labels if not None (if None, leave as is)
+    if xlabel is not None:
+        plt.xlabel(xlabel)
+    if ylabel is not None:
+        plt.ylabel(ylabel)
+
+    plt.xscale(xscale)
+
+
+    if plot_cbar:
+        cbar = plt.colorbar()
+        cbar.set_label(cbar_label)
+
+    if tight:
+        plt.tight_layout()
+
+
+def lineplot(X, Y, figsize=None, xlabel=None, ylabel=None, colors=None,
+             labels=None, xscale='linear', tight=False, **kwargs):
+    '''
+    Wrapper function to plot a line plot (using matplotlib)
+
+    Parameters
+    ----------
+    Y: (n_lines, n_observation) array-like
+        Lines to plot in the figure. Each row correspond to a specific line.
+    '''
+
+    Y = np.atleast_2d(Y)
+
+    plt.figure(figsize=figsize)
+    for i, line in enumerate(Y):
+        if colors is not None:
+            kwargs['color'] = colors[i]
+        if labels is not None:
+            label = labels[i]
+        else:
+            label = None
+        plt.plot(X, line, label=label, **kwargs)
+
+    if xlabel is not None:
+        plt.xlabel(xlabel)
+    if ylabel is not None:
+        plt.ylabel(ylabel)
+    plt.xscale(xscale)
+
+    if labels is not None:
+        plt.legend()
+
+    if tight:
+        plt.tight_layout()
+
+
+def get_color_distribution(scores, cmap="viridis", vmin=None, vmax=None,
+                           default_color='black', color_format='rgba'):
+    '''
+    Function to get a color for individual values of a distribution of scores.
+    '''
+
+    scores = np.asarray(scores)
+
+    if scores.min() == scores.max():
+        c = np.full((len(scores)), default_color, dtype="<U10")
+    else:
+        c = cm.get_cmap(cmap)(mpl.colors.Normalize(vmin, vmax)(scores))
+        if color_format == 'hex':
+            c_hex = []
+            for i in range(len(c)):
+                c_hex.append(rgb2hex(c[i,:], keep_alpha=True))
+            c = c_hex
+
+    return c
