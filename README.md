@@ -8,7 +8,7 @@ This repository contains scripts and functions to reproduce the results presente
 
 ## The results
 
-The [results](results) folder contains the main results of the experiments presented in the paper. Some results were too big to be pre-computed and included in this repository (e.g. random maps and permutations). However, these results can be easily re-computed using [main_script.py](main_script.py).
+The [results](results) folder contains the main results of the experiments presented in the paper. Some results were too big to be pre-computed and included in this repository (random maps, permutations and correlations between original and rotated maps). These results can however be easily re-computed using [main_script.py](main_script.py).
 
 ## The figures
 
