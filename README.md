@@ -1,6 +1,6 @@
 # The effect of spherical projection on spin tests for brain maps
 
-This repository contains scripts and functions to reproduce the results presented in [The effect of spherical projection on spin tests for brain maps](https://doi.org/10.1101/2024.12.15.628553).
+This repository contains scripts and functions to reproduce the results presented in [The effect of spherical projection on spin tests for brain maps](https://doi.org/10.1162/IMAG.a.118).
 
 ## The main script
 
@@ -8,7 +8,7 @@ This repository contains scripts and functions to reproduce the results presente
 
 ## The results
 
-The [results](results) folder contains the main results of the experiments presented in the paper. Some results were too big to be pre-computed and inclused in this repository (random maps and permutations). However, these results can be easily re-computed using [main_script.py](main_script.py).
+The [results](results) folder contains the main results of the experiments presented in the paper. Some results were too big to be pre-computed and included in this repository (e.g. random maps and permutations). However, these results can be easily re-computed using [main_script.py](main_script.py).
 
 ## The figures
 
@@ -27,4 +27,5 @@ The experiments presented in this repository make use of a certain number of pyt
 - [nibabel](<https://github.com/nipy/nibabel>)
 - [meshio](<https://github.com/nschloe/meshio>)
 - [matplotlib](<https://matplotlib.org/>)
+- [seaborn](<https://seaborn.pydata.org/>)
 - [palettable](<https://jiffyclub.github.io/palettable/>)

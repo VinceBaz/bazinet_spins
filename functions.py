@@ -9,18 +9,21 @@ tests for brain maps'.
 @author: Vincent Bazinet
 """
 
+import pickle
 import meshio
 import nibabel as nib
 import numpy as np
 import pyvista as pv
 import matplotlib.pyplot as plt
 import matplotlib as mpl
+from tqdm import trange
 from matplotlib import cm
-from scipy.stats import zscore, pearsonr, rankdata
+from scipy.stats import zscore, pearsonr, rankdata, mstats
 from scipy.spatial.distance import cdist
 from matplotlib.colors import is_color_like, rgb2hex
 from neuromaps.datasets import fetch_atlas
-from tqdm import trange
+from neuromaps.points import get_surface_distance
+from neuromaps.datasets import fetch_annotation
 
 
 '''
@@ -30,8 +33,11 @@ RESULTS FUNCTIONS
 
 def evaluate_spin_quality(dist, z_dist_triu, triu_ids, perm):
     '''
-    Function to evalute the quality of a spin but computing the correlation
-    between the original and permuted distance matrix.
+    Evaluate the quality of a spin.
+
+    This function efficiently evaluates the quality of a spin by computing the
+    correlation between the upper triangular values of the original and
+    permuted distance matrix.
 
     Parameters
     ----------
@@ -64,13 +70,60 @@ def compute_euclidean_distance(atlas, density, surface, hemi='L'):
 
     Parameters
     ----------
+    atlas: str
+        Atlas to fetch. Available options are: 'civet', 'fsaverage', 'fsLR' or
+        'MNI152'.
+    density: str
+        Density of the fetched atlas.
+    surface: str
+        Surface of the fetched atlas.
+    hemi: str
+        Hemisphere of the fetched atlas
 
     Returns
     -------
+    dist: (n, n) ndarray
+        Distance matrix capturing the euclidean distance between each vertices
+        of a brain surface mesh.
     '''
 
-    vertices = get_vertices(atlas, density, surface, 'L')
+    vertices = get_vertices(atlas, density, surface, hemi)
     dist = cdist(vertices, vertices)
+
+    return dist
+
+
+def compute_geodesic_distance(atlas, density, surface, hemi='L'):
+    '''
+    Function to compute the geodesic distance matrix for a given brain surface
+    mesh.
+
+    Parameters
+    ----------
+    atlas: str
+        Atlas to fetch. Available options are: 'civet', 'fsaverage', 'fsLR' or
+        'MNI152'.
+    density: str
+        Density of the fetched atlas.
+    surface: str
+        Surface of the fetched atlas.
+    hemi: str
+        Hemisphere of the fetched atlas.
+
+    Returns
+    -------
+    dist: (n, n) ndarray
+        Distance matrix capturing the geodesic distance between each vertices
+        of a brain surface mesh.
+    '''
+
+    if hemi == 'L':
+        hemiid = 0
+    elif hemi == 'R':
+        hemiid = 1
+
+    mesh = fetch_atlas(atlas, density)[surface][hemiid]
+    dist = get_surface_distance(mesh)
 
     return dist
 
@@ -125,6 +178,64 @@ def morans_i(dist, y, normalize=False, local=False, invert_dist=False):
     return len(y) / dist.sum() * (z * zl).sum() / den
 
 
+def variogram_function(dist, model_name='gaussian', length=50):
+    '''
+    Compute the variogram (for a specified model) of a distance matrix.
+
+    Parameters
+    ----------
+    dist: (n, n) ndarray
+        Matrix capturing the distance relationship between individual vertices
+        of a surface mesh
+    model_name: str
+        Name of the variogram model
+    length: int
+        Length parameter of the variogram model
+
+    Returns
+    -------
+    var: (n, n) ndarray
+        Matrix capturing the variogram value of each distance values in the
+        `dist` matrix.
+    '''
+    dist = np.abs(dist)
+
+    if model_name == 'gaussian':
+        cov = covariance_function(dist, model_name, length)
+        var = 1-cov
+
+    return var
+
+
+def covariance_function(dist, model_name='gaussian', length=50):
+    '''
+    Compute the covariance (for a specific model) of a distance matrix.
+
+    Parameters
+    ----------
+    dist: (n, n) ndarray
+        Matrix capturing the distance relationship between individual vertices
+        of a surface mesh
+    model_name: str
+        Name of the variogram model
+    length: int
+        Length parameter of the variogram model
+
+    Returns
+    -------
+    cov: (n, n) ndarray
+        Matrix capturing the covariance value of each distance values in the
+        `dist` matrix.
+    '''
+    dist = np.abs(dist)
+
+    if model_name == 'gaussian':
+        s = np.sqrt(np.pi)/2
+        cov = np.exp(-((s * dist)/length)**2)
+
+    return cov
+
+
 '''
 UTILITY FUNCTIONS
 '''
@@ -137,6 +248,17 @@ def load_mesh(atlas, density, surface, hemi='L', data_format='meshio'):
 
     Parameters
     ----------
+    atlas: str
+        Atlas to fetch. Available options are: 'civet', 'fsaverage', 'fsLR' or
+        'MNI152'.
+    density: str
+        Density of the fetched atlas.
+    surface: str
+        Surface of the fetched atlas.
+    hemi: str
+        Hemisphere of the fetched atlas
+    data_format: str
+        Format of the mesh data returned.
 
     Returns
     -------
@@ -144,7 +266,6 @@ def load_mesh(atlas, density, surface, hemi='L', data_format='meshio'):
         Surface mesh of the brain.
 
     '''
-
     if hemi == 'L':
         hemiid = 0
     elif hemi == 'R':
@@ -163,12 +284,57 @@ def load_mesh(atlas, density, surface, hemi='L', data_format='meshio'):
     return mesh
 
 
+def fetch_neuromaps_maps():
+    '''
+    Fetch the maps from neuromaps used in the manuscript.
+
+    The function fetches maps from neuromaps that were originally published
+    in a surface space. We also ignore the maps from hill2010 since they are
+    only available on the right hemisphere. We also ignore the fc gradient
+    maps other than the first one.
+
+    Returns:
+    -------
+    brain_maps: dict
+        Dictionary of brain maps. The keys of the dictionaries are tuples
+        of the parameters of each map (source, desc, space, den) and the
+        values correspond to the path to each downloaded files.
+    '''
+
+    # Fetch brain maps originally published in a surface space
+    brain_maps = fetch_annotation(space=['fsaverage', 'fsLR', 'civet'])
+
+    # Remove fc gradient maps + hill2010 (only available on right hemisphere)
+    del brain_maps[('hill2010', 'devexp', 'fsLR', '164k')]
+    del brain_maps[('hill2010', 'evoexp', 'fsLR', '164k')]
+    del brain_maps[('margulies2016', 'fcgradient10', 'fsLR', '32k')]
+    del brain_maps[('margulies2016', 'fcgradient09', 'fsLR', '32k')]
+    del brain_maps[('margulies2016', 'fcgradient08', 'fsLR', '32k')]
+    del brain_maps[('margulies2016', 'fcgradient07', 'fsLR', '32k')]
+    del brain_maps[('margulies2016', 'fcgradient06', 'fsLR', '32k')]
+    del brain_maps[('margulies2016', 'fcgradient05', 'fsLR', '32k')]
+    del brain_maps[('margulies2016', 'fcgradient04', 'fsLR', '32k')]
+    del brain_maps[('margulies2016', 'fcgradient03', 'fsLR', '32k')]
+    del brain_maps[('margulies2016', 'fcgradient02', 'fsLR', '32k')]
+
+    return brain_maps
+
+
 def get_vertices(atlas, density, surface, hemi='L'):
     '''
     Function to load the coordinates of vertices on a surface mesh.
 
     Parameters
     ----------
+    atlas: str
+        Atlas to fetch. Available options are: 'civet', 'fsaverage', 'fsLR' or
+        'MNI152'.
+    density: str
+        Density of the fetched atlas.
+    surface: str
+        Surface of the fetched atlas.
+    hemi: str
+        Hemisphere of the fetched atlas
 
     Returns
     -------
@@ -194,9 +360,20 @@ def inverse(A, k=1, normalize=False):
 
     Parameters
     ----------
+    A : (n, n) ndarray
+        Matrix for which we want to compute inverse values.
+    k : float
+        Exponent to be applied to the matrix values before computing the
+        inverse.
+    normalize: bool
+        If `True`, then each row of the inverse matrix will be normalize such
+        that the values in the row sum to 1.
 
     Returns
     -------
+    w: (n, n) ndarray
+        Matrix where each non-zero entries correspond to the inverse of the
+        non-zero entries in matrix `A`
     '''
 
     w = A.copy()
@@ -215,9 +392,21 @@ def sample_subset_permutations(quantiles, quality, n_perm=1000):
 
     Parameters
     ----------
+    quantiles: (n_thres,) array-like
+        Quantile values (thresholds) at which we want to sample a subset of
+        permutations
+    quality: (n_perm,) array-like
+        Array of quality values quantifying the quality of each spin
+    n_perm: int
+        Number of samples to be sampled from each thresholded distributions.
 
     Returns
     -------
+    quantiles_spins: array-like
+        Array of indices associated with a permutation (from the `quality`
+        array) that have been sampled in one of the subsets.
+    quantiles_nb: array-like
+        Quantile "bin" for which the specific spin has been sampled.
     '''
 
     # Find IDs of spins (based on thresholds)
@@ -251,6 +440,11 @@ def get_p_value(perm, emp, axis=0):
         Empirical score.
     axis: float
         Axis of the `perm` array associated with the null scores.
+
+    Returns
+    -------
+    p-value: float or array-like
+        p-values of each empirical score.
     '''
 
     k = perm.shape[axis]
@@ -264,17 +458,174 @@ def get_p_value(perm, emp, axis=0):
     return pval
 
 
+def standardize_scores(surr, emp, axis=None, ignore_nan=False):
+    '''
+    Utility function to standardize scores relative to a null distribution.
+
+    Parameters
+    ----------
+    perm: array-like
+        Null distribution of scores.
+    emp: float or array-like
+        Empirical scores.
+    axis: int
+        Axis along which perm scores are distributed.
+    ignore_nan: bool
+        If True, then nan values are ignored when standardizing scores
+
+    Returns
+    -------
+    z_emp: float or array-like
+        Empirical scores standardized relative to null distribution of scores.
+    '''
+
+    if ignore_nan:
+        return (emp - np.nanmean(surr, axis=axis)) / np.nanstd(surr, axis=axis)
+    else:
+        return (emp - np.mean(surr, axis=axis)) / np.std(surr, axis=axis)
+
+
+def load_pickle(path):
+    '''
+    Load pickled data.
+
+    Parameters
+    ----------
+    path: path-like
+        Path to the pickled file to be loaded
+
+    Returns
+    -------
+    data: object
+        Loaded data
+    '''
+
+    with open(path, 'rb') as handle:
+        data = pickle.load(handle)
+
+    return data
+
+
+def save_pickle(data, path):
+    '''
+    Save data as a `.pickle` file
+
+    Parameters
+    ----------
+    data: object
+        Data to be pickled
+    file: path-like
+        Filename where the pickled data will be saved
+    '''
+    with open(path, 'wb') as handle:
+        pickle.dump(data, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def get_mean_in_bins(X, Y, bins=None, n_bins=10, bin_type='quantiles',
+                     triu=False, ignore_empty_bins=True):
+    '''
+    Function to create bins using an independent variable `X` and compute the
+    mean scores of a variable `Y` within those bins.
+
+    Parameters
+    ----------
+    X: (n,) or (n, n) array-like
+        Values of the independent variable used to compute the bins
+    Y: (n,) or (n, n) array-like
+        Values of the dependent variables for which we want binned means.
+    bins: (n_bins+1,)
+        Array specifying the bin edges. If set to `None` (default), the bin
+        edges are automatically calculated.
+    n_bins: int
+        Number of bins to use.
+    bin_type: str
+        The types of bins used in the function. Available options are
+        `quantiles` (equal number of edges in each bin) or `histogram` (equal
+        width between each bin).
+    triu: Bool
+        If `True`, compute the mean in each bin for the upper triangular values
+        of a 2-dimensional matrix.
+    ignore_empty_bins: bool
+        If `True`, empty bins are ignored
+
+    Returns
+    -------
+    mean_bins: (n_bins) ndarray
+        Mean values of X in each bin
+    bins: (n_bins+1) ndarray
+        Bin edges
+    bin_centers: (n_bins) ndarray
+        Center of each bin.
+    '''
+
+    if triu:
+        triu_indices = np.triu_indices(len(X), 1)
+        X = X[triu_indices]
+        Y = Y[triu_indices]
+
+    X_labels, bin_centers, bins = get_bins_labels(X, n_bins=n_bins, triu=False,
+                                                  bin_type=bin_type, bins=bins)
+    mean_bins = mean_in_group(X_labels, Y, ignore_0=ignore_empty_bins)
+
+    return mean_bins, bins, bin_centers
+
+
+def get_bins_labels(X, n_bins=50, triu=True, bin_type='histogram', bins=None):
+    '''
+    Get the bin index (label) associated with each value in an array `X`.
+    '''
+    if triu:
+        triu_indices = np.triu_indices(len(X), 1)
+        X = X[triu_indices]
+
+    if bins is None:
+        if bin_type == "quantiles":
+            bins = mstats.mquantiles(X, np.linspace(0, 1, n_bins+1))
+        elif bin_type == 'histogram':
+            bins = np.linspace(X.min(), X.max(), n_bins+1)
+
+    bin_labels = np.digitize(X, bins) - 1
+    bin_labels[X == bins[n_bins]] = n_bins - 1
+
+    bin_centers = (bins[:-1] + bins[1:]) / 2
+
+    return bin_labels, bin_centers, bins
+
+
+def mean_in_group(X, Y, ignore_0=True):
+    '''
+    Get the mean of X, grouped by integer values indexed in Y.
+    '''
+
+    sums = np.bincount(X, weights=Y)
+    counts = np.bincount(X)
+
+    if ignore_0:
+        return sums[sums > 0] / counts[counts > 0]
+    else:
+        return sums / counts
+
+
 '''
 VISUALIZATION FUNCTIONS
 '''
 
 
 def plot_surface_map(map, mesh, cmap='viridis', save=False, save_path=None,
-                     view='default'):
+                     view='default', clim=None):
+    '''
+    Plot a brain map (values) on a brain surface mesh using Pyvista.s
 
+    Parameters
+    ----------
+    map: (n_vertices) array-like
+        Brain map values to plot on the surface mesh
+    mesh: pv.PolyData object
+        Surface mesh in `pv.PolyData` format
+    '''
     pl = pv.Plotter(window_size=(1000, 1000), lighting="none", off_screen=True)
     mesh.point_data['map'] = map
-    pl.add_mesh(mesh, scalars='map', cmap=cmap)
+    pl.add_mesh(mesh, scalars='map', cmap=cmap, clim=clim)
     pl.remove_scalar_bar()
     if view == 'yz_negative':
         pl.view_yz(negative=True)
@@ -385,8 +736,9 @@ def scatterplot(X, Y, triu=False, tight=False, figsize=None, c='black',
                 plot_y_mean=False, plot_x_mean=False, plot_identity=False,
                 compute_r=False, compute_rho=False, r_round=None,
                 r_title="r: ", rho_title='rho: ', plot_cbar=False,
-                cbar_label='', ma_width=9, **kwargs):
-    ''' Wrapper function to plot a scatterplot (using matplotlib)'''
+                cbar_label='', ma_width=9, plot_x_0=False,
+                plot_y_0=False, **kwargs):
+    ''' Wrapper function to plot a scatterplot (using matplotlib).'''
 
     # Only look at upper triangular indices
     if triu:
@@ -431,6 +783,14 @@ def scatterplot(X, Y, triu=False, tight=False, figsize=None, c='black',
         plt.plot([X.min(), X.max()], [X.min(), X.max()],
                  color='lightgray',
                  linestyle='dashed')
+    if plot_y_0:
+        plt.plot([X.min(), X.max()], [0, 0],
+                 color='lightgray',
+                 linestyle='dashed')
+    if plot_x_0:
+        plt.plot([0, 0], [Y.min(), Y.max()],
+                 color='lightgray',
+                 linestyle='dashed')
 
     # Change x/y labels if not None (if None, leave as is)
     if xlabel is not None:
@@ -439,7 +799,6 @@ def scatterplot(X, Y, triu=False, tight=False, figsize=None, c='black',
         plt.ylabel(ylabel)
 
     plt.xscale(xscale)
-
 
     if plot_cbar:
         cbar = plt.colorbar()
@@ -485,22 +844,69 @@ def lineplot(X, Y, figsize=None, xlabel=None, ylabel=None, colors=None,
         plt.tight_layout()
 
 
-def get_color_distribution(scores, cmap="viridis", vmin=None, vmax=None,
+def get_color_distribution(values, cmap="viridis", vmin=None, vmax=None,
                            default_color='black', color_format='rgba'):
     '''
-    Function to get a color for individual values of a distribution of scores.
+    Function to get a color for individual values of a distribution.
     '''
 
-    scores = np.asarray(scores)
+    values = np.asarray(values)
 
-    if scores.min() == scores.max():
-        c = np.full((len(scores)), default_color, dtype="<U10")
+    if values.min() == values.max():
+        c = np.full((len(values)), default_color, dtype="<U10")
     else:
-        c = cm.get_cmap(cmap)(mpl.colors.Normalize(vmin, vmax)(scores))
+        c = cm.get_cmap(cmap)(mpl.colors.Normalize(vmin, vmax)(values))
         if color_format == 'hex':
             c_hex = []
             for i in range(len(c)):
-                c_hex.append(rgb2hex(c[i,:], keep_alpha=True))
+                c_hex.append(rgb2hex(c[i, :], keep_alpha=True))
             c = c_hex
 
     return c
+
+
+def plot_matrix(X, figsize=None, save_path=None, dpi=300, colorbar=False,
+                xticks=None, yticks=None, auto_locator=True, round_ticks=True,
+                n_decimals=2, cbar_label='', vmin=None, vmax=None, xlabel=None,
+                ylabel=None, **kwargs):
+    ''' Wrapper function to plot a matrix (using matplotlib).'''
+
+    if vmin is None:
+        vmin = np.nanmin(X)
+    if vmax is None:
+        vmax = np.nanmax(X)
+
+    plt.figure(figsize=figsize)
+    plt.imshow(X, vmin=vmin, vmax=vmax, **kwargs)
+
+    # Set colorbar (optional)
+    if colorbar:
+        cbar = plt.colorbar()
+        cbar.set_label(cbar_label, rotation=90)
+        cbar.set_ticks([vmin, vmax])
+
+    # Set xticks (optional)
+    if xticks is not None:
+        if round_ticks:
+            xticks = np.round(xticks, n_decimals)
+        plt.xticks(np.arange(len(xticks)), xticks)
+        if auto_locator:
+            plt.gca().xaxis.set_major_locator(plt.AutoLocator())
+
+    # Set yticks (optional)
+    if yticks is not None:
+        if round_ticks:
+            yticks = np.round(yticks, n_decimals)
+        plt.yticks(np.arange(len(yticks)), yticks)
+        if auto_locator:
+            plt.gca().yaxis.set_major_locator(plt.AutoLocator())
+
+    # Add axis labels (optional)
+    if xlabel is not None:
+        plt.xlabel(xlabel)
+    if ylabel is not None:
+        plt.ylabel(ylabel)
+
+    # Save figure (optional)
+    if save_path is not None:
+        plt.savefig(save_path, dpi=dpi)
